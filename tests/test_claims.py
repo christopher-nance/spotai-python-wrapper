@@ -1,0 +1,196 @@
+"""Tests for claim naming, identity, status, and window planning."""
+
+from datetime import datetime, timezone
+
+import pytest
+
+from spotai import Camera, SiteMap
+from spotai.claims import (
+    MAX_DEVICE_NAME,
+    build_external_id,
+    derive_status,
+    device_name,
+    plan_windows,
+    signed_url_expiry,
+    union_span,
+)
+from spotai.lpr import fuzzy_variants, normalize_plate
+
+
+class TestDeviceName:
+    def test_basic_format(self):
+        assert device_name("J.Smith", "2026-08-30") == "J.Smith | 2026-08-30"
+
+    def test_fits_spot_forty_character_cap(self):
+        name = device_name("A" * 100, "2026-08-30")
+        assert len(name) <= MAX_DEVICE_NAME
+
+    def test_date_survives_truncation(self):
+        # The date is what distinguishes a repeat customer's two claims.
+        name = device_name("Bartholomew Fotheringay-Smythe III", "2026-08-30")
+        assert name.endswith("| 2026-08-30")
+        assert len(name) <= MAX_DEVICE_NAME
+
+    def test_long_name_is_truncated_not_rejected(self):
+        name = device_name("A" * 100, "2026-08-30")
+        assert name.startswith("A")
+        assert name.endswith(" | 2026-08-30")
+
+    def test_empty_customer_falls_back(self):
+        assert device_name("", "2026-08-30") == "Unknown | 2026-08-30"
+
+    def test_whitespace_customer_falls_back(self):
+        assert device_name("   ", "2026-08-30") == "Unknown | 2026-08-30"
+
+    def test_strips_surrounding_whitespace(self):
+        assert device_name("  J.Smith  ", "2026-08-30") == "J.Smith | 2026-08-30"
+
+    def test_exactly_at_the_boundary(self):
+        # 27 chars of customer + 13 of suffix = exactly 40
+        name = device_name("B" * 27, "2026-08-30")
+        assert len(name) == MAX_DEVICE_NAME
+
+
+class TestExternalId:
+    def test_full_form(self):
+        assert build_external_id("WHEATON", "CLAIM-118", "8B00000", "2026-08-30") == (
+            "WHEATON:CLAIM-118:8B00000:2026-08-30"
+        )
+
+    def test_missing_ref_and_plate_use_sentinels(self):
+        got = build_external_id("NILES", None, None, "2026-08-30")
+        assert got == "NILES:NOREF:NOPLATE:2026-08-30"
+
+    def test_plate_is_upper_cased(self):
+        got = build_external_id("WHEATON", "C1", "abc1234", "2026-08-30")
+        assert "ABC1234" in got
+
+    def test_colons_in_input_do_not_break_the_key(self):
+        got = build_external_id("WHEATON", "A:B", "P:Q", "2026-08-30")
+        assert got.count(":") == 3
+
+    def test_respects_length_cap(self):
+        got = build_external_id("X" * 300, "Y" * 300, "Z" * 300, "2026-08-30")
+        assert len(got) <= 255
+
+    def test_is_deterministic(self):
+        a = build_external_id("WHEATON", "C1", "ABC1234", "2026-08-30")
+        b = build_external_id("WHEATON", "C1", "ABC1234", "2026-08-30")
+        assert a == b
+
+
+class TestDeriveStatus:
+    def test_all_succeeded_is_ready(self):
+        assert derive_status(["SUCCEEDED"] * 3) == "ready"
+
+    def test_any_queued_is_pending(self):
+        assert derive_status(["SUCCEEDED", "QUEUED"]) == "pending"
+
+    def test_any_processing_is_pending(self):
+        assert derive_status(["SUCCEEDED", "PROCESSING"]) == "pending"
+
+    def test_pending_wins_over_failure(self):
+        # Still in flight, so not yet a final answer.
+        assert derive_status(["FAILED", "PROCESSING"]) == "pending"
+
+    def test_mixed_terminal_is_partial(self):
+        assert derive_status(["SUCCEEDED", "FAILED"]) == "partial"
+
+    def test_stalled_counts_as_failure(self):
+        assert derive_status(["SUCCEEDED", "STALLED"]) == "partial"
+
+    def test_none_succeeded_is_failed(self):
+        assert derive_status(["FAILED", "STALLED"]) == "failed"
+
+    def test_empty_is_failed(self):
+        assert derive_status([]) == "failed"
+
+    def test_realistic_fifteen_of_sixteen(self):
+        # The exact case observed live: one wedged export, fifteen good clips.
+        assert derive_status(["SUCCEEDED"] * 15 + ["STALLED"]) == "partial"
+
+
+class TestSignedUrlExpiry:
+    def test_parses_goog_signature_deadline(self):
+        url = (
+            "https://storage.googleapis.com/bucket/footage.mp4"
+            "?X-Goog-Algorithm=GOOG4-RSA-SHA256"
+            "&X-Goog-Date=20260831T195338Z&X-Goog-Expires=3600"
+        )
+        assert signed_url_expiry(url) == datetime(
+            2026, 8, 31, 20, 53, 38, tzinfo=timezone.utc
+        )
+
+    def test_returns_none_for_unsigned_url(self):
+        assert signed_url_expiry("https://example.com/a.mp4") is None
+
+    def test_returns_none_for_garbage(self):
+        assert signed_url_expiry("not a url at all") is None
+
+    def test_returns_none_for_empty(self):
+        assert signed_url_expiry("") is None
+
+
+class TestPlanWindows:
+    def setup_method(self):
+        self.site = SiteMap(
+            location_id=1,
+            location_name="Test",
+            timezone="America/Chicago",
+            transit_seconds=240,
+            clip_seconds=120,
+            pad_before_seconds=30,
+            pad_after_seconds=60,
+            cameras=[
+                Camera(id=1, name="LPR", role="entry"),
+                Camera(id=2, name="Mid", role="tunnel"),
+                Camera(id=3, name="Exit", role="exit"),
+            ],
+        )
+        self.t0 = datetime(2026, 8, 30, 15, 9, 0, tzinfo=timezone.utc)
+
+    def test_one_entry_per_camera(self):
+        assert len(plan_windows(self.site, self.t0)) == 3
+
+    def test_entry_window_brackets_t0(self):
+        entry = plan_windows(self.site, self.t0)[0]
+        assert entry.window_start == "2026-08-30T15:08:30.000Z"
+        assert entry.window_end == "2026-08-30T15:12:00.000Z"
+
+    def test_exit_window_excludes_t0(self):
+        # The whole reason offsets exist: at a 240s transit the exit camera
+        # must not be clipping the moment the car entered.
+        exit_cam = plan_windows(self.site, self.t0)[-1]
+        assert exit_cam.window_start == "2026-08-30T15:12:30.000Z"
+
+    def test_ordered_by_offset(self):
+        offs = [c.offset_seconds for c in plan_windows(self.site, self.t0)]
+        assert offs == sorted(offs)
+
+    def test_union_span_covers_everything(self):
+        cams = plan_windows(self.site, self.t0)
+        start, end = union_span(cams)
+        assert start == cams[0].window_start
+        assert end == cams[-1].window_end
+
+
+class TestPlateHelpers:
+    def test_normalize_strips_punctuation(self):
+        assert normalize_plate(" abc-1234 ") == "ABC1234"
+
+    def test_fuzzy_keeps_original_first(self):
+        assert fuzzy_variants("8B00000")[0] == "8B00000"
+
+    def test_fuzzy_generates_lookalikes(self):
+        variants = fuzzy_variants("B0S")
+        assert "80S" in variants and "BOS" in variants and "B05" in variants
+
+    def test_fuzzy_has_no_duplicates(self):
+        v = fuzzy_variants("OO00")
+        assert len(v) == len(set(v))
+
+    def test_fuzzy_on_plate_without_confusables(self):
+        assert fuzzy_variants("XYW") == ["XYW"]
+
+    def test_fuzzy_empty(self):
+        assert fuzzy_variants("") == []

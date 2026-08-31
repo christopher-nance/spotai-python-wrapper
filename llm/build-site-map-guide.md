@@ -112,14 +112,14 @@ cameras listed separately so they can rescue anything you wrongly dropped:
 
 ```
 ENTRY / ENTRANCE ARCH
-  [1] Inspection Entrance D-T      144824
-  [2] Inspection Entrance D-B      144797
-  [3] Inspection Entrance P-T      144808
+  [1] Inspection Entrance D-T      2011
+  [2] Inspection Entrance D-B      2012
+  [3] Inspection Entrance P-T      2013
 TUNNEL
-  [4] SmartStop #1                 144807
+  [4] SmartStop #1                 2003
   ...
 EXIT / EXIT ARCH
-  [12] Inspection Exit D-T         144800
+  [12] Inspection Exit D-T         2005
   ...
 EXCLUDED (say if any of these belong)
   Lobby, Office, Vacuum Lot 2, Pay Stations, ...
@@ -209,7 +209,7 @@ last camera. For a damage claim, better is usually:
 Offer that and let the user override:
 
 ```python
-key_camera_ids=[144813, 144824, 144800, 144825]
+key_camera_ids=[2001, 2011, 2005, 2014]
 ```
 
 ---
@@ -235,12 +235,12 @@ Do not present this as an error. It is a Spot limit, handled deliberately by
 from spotai import SiteMap, Camera
 
 site = SiteMap(
-    location_id=6284,
+    location_id=1001,
     location_name="Wheaton",              # the name the user will type
     timezone="America/Chicago",
     transit_seconds=240,
     clip_seconds=120,
-    lpr_camera_id=144813,
+    lpr_camera_id=2001,
     cameras=[...],                         # ordered entry -> exit
     key_camera_ids=[...],
 )
@@ -316,7 +316,7 @@ Then delete the test claim so it does not pollute the case list.
 cameras = [Camera(id=c["id"], name=c["name"]) for c in spot.cameras()]
 
 # WRONG - includes lobby, vacuums, equipment rooms
-cameras = [Camera(id=c["id"]) for c in spot.cameras(location_ids=[6284])]
+cameras = [Camera(id=c["id"]) for c in spot.cameras(location_ids=[1001])]
 
 # WRONG - same arch, three different offsets, so three wrong clip windows
 Camera(id=101, name="Mid Arch D-T", role="tunnel"),

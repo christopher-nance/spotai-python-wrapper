@@ -172,6 +172,16 @@ class Claim:
     share_link: str | None = None
     reused: bool = False
     cameras: list[ClaimCamera] = field(default_factory=list)
+    # Where T0 came from: "plate" (exact LPR hit) or "estimate" (typed time).
+    anchor: str = "plate"
+    matched_plate: str | None = None
+    match_confidence: float | None = None
+    candidates: list[dict[str, Any]] = field(default_factory=list)
+
+    @property
+    def needs_review(self) -> bool:
+        """True when a human should confirm the vehicle before this is used."""
+        return self.anchor != "plate" or (self.match_confidence or 0) < 0.92
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -183,6 +193,10 @@ class Claim:
             "status": self.status,
             "share_link": self.share_link,
             "reused": self.reused,
+            "anchor": self.anchor,
+            "matched_plate": self.matched_plate,
+            "match_confidence": self.match_confidence,
+            "candidates": self.candidates,
             "cameras": [vars(c) for c in self.cameras],
         }
 
@@ -205,10 +219,18 @@ class ClaimResult:
     share_link: str | None
     clips: list[Clip] = field(default_factory=list)
     problems: list[dict[str, Any]] = field(default_factory=list)
+    anchor: str = "plate"
+    matched_plate: str | None = None
+    match_confidence: float | None = None
 
     @property
     def ready(self) -> bool:
         return self.status == "ready"
+
+    @property
+    def link_only(self) -> bool:
+        """No clips were exported - the anchor was an estimate."""
+        return self.status == "link-only"
 
 
 # ------------------------------------------------------------------- plan

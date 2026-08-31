@@ -28,9 +28,10 @@ from .errors import (
     SpotNotFoundError,
     SpotPermissionError,
 )
+from .matching import PlateCandidate, confidence_band, is_usable, similarity
 from .sitemap import Camera, SiteMap
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 __all__ = [
     "SpotAI",
@@ -39,6 +40,10 @@ __all__ = [
     "Claim",
     "ClaimResult",
     "Clip",
+    "PlateCandidate",
+    "similarity",
+    "confidence_band",
+    "is_usable",
     "SpotError",
     "SpotAuthError",
     "SpotPermissionError",

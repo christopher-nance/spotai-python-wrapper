@@ -325,6 +325,75 @@ claim = spot.collect_damage_claim(..., plate="ABC1234", fuzzy=True)
 
 Off by default, because it can match the wrong car.
 
+### Plate matching is fuzzy on purpose
+
+Plate readers are not reliable enough for exact matching. Measured on 521 real
+reads from one site, **46% were shorter than a full plate** — the reader loses
+characters off the front. So a claim for `AB12345` would find nothing whenever
+that car happened to be read as `12345`.
+
+The library handles this for you: it scores every plate the reader saw that day
+and picks the best match, rather than asking for an exact one. It copes with
+lower case, spaces (`C12 3456`), dashes, a state prefix, a typo, look-alike
+characters (`0`/`O`, `8`/`B`, `5`/`S`), and missing characters.
+
+You can also just ask who it thinks the car was:
+
+```python
+for c in spot.match_plate("Wheaton", "AB12345", date="2026-08-30"):
+    print(c.plate, c.score, c.band)
+```
+
+```
+AB12345   1.00   near-certain
+12345     0.87   likely
+```
+
+| Band | What to do |
+|---|---|
+| `near-certain` | trust it |
+| `likely` | trust it, worth a glance |
+| `possible` | have a person confirm which car |
+| nothing returned | the reader never saw that car — use the time instead |
+
+**An empty result is not an error.** Plate readers miss cars. That is what the
+timestamp fallback is for, and it is why passing both a plate *and* a time is
+the best way to call this.
+
+Junk entries — `N/A`, `TEST`, `1111`, a note pasted into the plate box — are
+ignored rather than matched against, so they cannot produce a confident wrong
+answer.
+
+### Pass both a plate and a time
+
+```python
+claim = spot.collect_damage_claim(
+    location="Wheaton",
+    customer="J. Smith",
+    plate="ABC1234",              # preferred
+    at="2026-08-30 10:09",        # fallback if the plate can't be matched
+)
+```
+
+The plate wins when the reader confidently saw it. Otherwise the time is used.
+`claim.anchor` tells you which happened.
+
+### Estimated times get a link, not clips
+
+When the anchor is a **typed time**, the library makes a **wide, scrubbable
+link** instead of cutting clips.
+
+That is deliberate. We compared real typed times against what the plate reader
+actually recorded: people were off by about 7 minutes on average, and up to 15.
+A 90-second clip built on a guess often misses the car — and a clip of the
+**wrong car is worse than no clip**, because it still looks like evidence.
+
+So a reviewer scrubs the wide view to find the car. Once you know the real
+time, re-run with it to get precise clips.
+
+Override with `clips="always"` or `clips="never"` if you want different
+behaviour.
+
 ### `occurrence` — subtle but real
 
 The plate camera watches each car for about a minute as it approaches and
@@ -361,6 +430,7 @@ for clip in result.clips:
 | `pending` | still cutting video | wait, check again |
 | `ready` | every clip is done | show them |
 | `partial` | some worked, some didn't | show what you have |
+| `link-only` | no clips cut — the time was an estimate | show the share link |
 | `failed` | nothing worked | check `result.problems` |
 
 **`partial` is normal.** Spot's export occasionally gets stuck on one camera —
@@ -493,6 +563,7 @@ It expired — they last an hour. Call `get_claim` again.
 |---|---|
 | `collect_damage_claim(...)` | Build a claim case. Returns a `Claim`. |
 | `get_claim(device_id, event_id=None)` | Current status, clips, problems. |
+| `match_plate(location, plate, date=None)` | Rank what the plate reader saw against what was typed. |
 | `site_map(location)` | Look up a configured `SiteMap`. |
 
 ### Cameras and locations

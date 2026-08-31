@@ -2,7 +2,7 @@
 
 Drop this file into your project as `CLAUDE.md`, `AGENTS.md`, or attach it to
 a Codex/Claude Code session. It is a complete operating manual for writing
-correct code against `spotai-python-wrapper` v0.1.0.
+correct code against `spotai-python-wrapper` v0.2.0.
 
 Optimise for correctness over brevity. Several API behaviours below are
 counter-intuitive and will silently produce broken code if ignored.
@@ -124,6 +124,11 @@ claim.status      # str
 claim.share_link  # str|None
 claim.reused      # bool - True if an existing claim was returned
 claim.cameras     # list[ClaimCamera]
+claim.anchor      # "plate" | "estimate"
+claim.matched_plate      # what the LPR actually read, or None
+claim.match_confidence   # 0.0-1.0, or None
+claim.candidates         # list[dict] - the shortlist, for a human to pick from
+claim.needs_review       # bool
 claim.to_dict()   # JSON-safe
 ```
 
@@ -135,6 +140,10 @@ result.share_link  # str|None, 7-day expiry
 result.clips       # list[Clip], sorted by offset_seconds
 result.problems    # list[dict]: {"camera", "state", "reason"}
 result.ready       # bool, == (status == "ready")
+result.anchor           # "plate" | "estimate"
+result.matched_plate    # what the LPR read, or None
+result.match_confidence # 0.0-1.0, or None
+result.link_only        # bool - no clips exported (estimated anchor)
 ```
 
 ### `Clip`
@@ -179,12 +188,19 @@ claim = spot.collect_damage_claim(
     date: str | None = None,      # "YYYY-MM-DD"; with `plate`; default today-at-site
     claim_ref: str | None = None,
     occurrence: str = "first",    # "first" | "last"
-    fuzzy: bool = False,
     reuse_existing: bool = True,
+    clips: str = "auto",          # "auto" | "always" | "never"
+    min_confidence: float = 0.78,
+    estimate_window_minutes: int = 20,
 ) -> Claim
 ```
 
 Returns in seconds. Exports are submitted, **not** awaited.
+
+**Supply `plate`, `at`, or BOTH.** Both is the normal production case: the
+plate is the preferred anchor and the timestamp is the fallback when no
+confident LPR match exists. (Earlier versions rejected both; they no longer
+do.)
 
 ### Internal step order (do not reorder if you modify it)
 
@@ -211,6 +227,60 @@ Re-submitting identical arguments returns the existing claim with
 
 Lookup is O(devices with that site tag) — Spot cannot filter devices by
 `external_id`.
+
+### Anchors: precise vs estimated
+
+T0 comes from one of two places and they are **not** equally trustworthy.
+
+| Anchor | Source | Precision | Default behaviour |
+|---|---|---|---|
+| `plate` | LPR match | exact | narrow clips (90-120s per camera) |
+| `estimate` | typed time | median 7 min error, up to 15 | **wide scrubbable link**, no clips |
+
+Measured against LPR ground truth, typed times were off by a median of 7
+minutes. A 90-second clip centred on an estimate often misses the car, and a
+clip of the **wrong car is worse than no clip** because it still looks like
+evidence. So `clips="auto"` exports only for a precise anchor.
+
+`Claim.anchor` and `ClaimResult.anchor` record which was used.
+`Claim.needs_review` is True when a human should confirm the vehicle.
+`ClaimResult.link_only` is True when no clips were exported.
+
+### `match_plate` - ranking, not guessing
+
+```python
+candidates = spot.match_plate(location, plate, date=None, limit=5) -> list[PlateCandidate]
+```
+
+```python
+c.plate, c.score, c.band, c.visits, c.first_seen, c.last_seen
+c.auto_acceptable   # score >= 0.78
+c.to_dict()
+```
+
+**Why ranking beats exact matching.** On 521 live reads, **46% were shorter
+than a full plate**, and the shape ladder (`LLDDDDD` -> `LDDDDD` -> `DDDDD`)
+shows characters are lost from the **left**. So `plates=["AB12345"]` finds
+nothing whenever that car was read as `12345`. `match_plate` scores every read
+for the day instead.
+
+| Band | Score | Meaning |
+|---|---|---|
+| `near-certain` | >= 0.92 | auto-attach |
+| `likely` | >= 0.78 | auto-attach, flag for verification |
+| `possible` | >= 0.62 | show the shortlist to a person |
+| `weak` | < 0.62 | not returned |
+
+Helpers: `similarity(a, b) -> float`, `confidence_band(score) -> str`,
+`is_usable(plate) -> bool`, `is_ambiguous(candidates) -> bool`.
+
+**`is_usable` is a guard you must respect.** Real exports contain `N/A`,
+`TEST`, `1111`, `CEO`, and pasted notes 46 characters long. `match_plate`
+returns `[]` for those rather than fabricating a match; route them to the
+timestamp path.
+
+Returning `[]` is also correct when the car was simply never read - the LPR
+misses vehicles. Do not treat an empty list as an error.
 
 ### `occurrence`
 
@@ -407,6 +477,7 @@ if count > 0 and visible == 0:
 | Module | Responsibility |
 |---|---|
 | `transport.py` | HTTP: auth, retries, error mapping, cursor pagination |
+| `matching.py` | Plate matching: normalisation, scoring, confidence bands |
 | `client.py` | `SpotAI` — public surface; thin, delegates |
 | `damage_claims.py` | The claim workflow |
 | `claims.py` | Models + pure helpers (naming, identity, status, windows) |

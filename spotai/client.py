@@ -11,6 +11,9 @@ from typing import Any, Sequence
 
 from . import damage_claims
 from .claims import MAX_SHARED_CAMERAS, Claim, ClaimResult
+from .errors import NoLprCamera
+from .lpr import lookup_plate
+from .matching import LIKELY, PlateCandidate, is_usable, rank_candidates
 from .sitemap import SiteMap, resolve_site_map
 from .transport import BASE_URL, Transport
 
@@ -322,6 +325,36 @@ class SpotAI:
         """Find a configured site by id, exact name, or unambiguous substring."""
         return resolve_site_map(self.site_maps, location)
 
+    def match_plate(
+        self,
+        location: str | int,
+        plate: str,
+        date: str | None = None,
+        limit: int = 5,
+    ) -> list[PlateCandidate]:
+        """Rank what the LPR actually read against a typed plate.
+
+        Exact matching is not enough: measured on live data, 46% of reads are
+        shorter than a full plate because characters are lost from the left.
+        This scores every read for the day and returns ranked candidates with
+        confidence, so a caller can auto-accept a strong match or show a
+        person the shortlist.
+
+        Returns an empty list when the plate is unusable (``N/A``, ``TEST``, a
+        pasted note) or nothing scores above the floor - which is the right
+        answer when the car was never read.
+        """
+        site = self.site_map(location)
+        if not site.lpr_camera_id:
+            raise NoLprCamera(site.location_name + " has no LPR camera.")
+        if not is_usable(plate):
+            return []
+        day = date or damage_claims.today_at_site(site)
+        lookup = lookup_plate(
+            self, site.lpr_camera_id, plate, day, site.timezone, fuzzy=False
+        )
+        return rank_candidates(plate, lookup.sightings, limit=limit)
+
     def collect_damage_claim(
         self,
         location: str | int,
@@ -331,18 +364,29 @@ class SpotAI:
         date: str | None = None,
         claim_ref: str | None = None,
         occurrence: str = "first",
-        fuzzy: bool = False,
         reuse_existing: bool = True,
+        clips: str = "auto",
+        min_confidence: float = LIKELY,
+        estimate_window_minutes: int = 20,
     ) -> Claim:
         """Package a damage claim into a Spot case. Returns immediately.
 
-        Supply either ``plate`` (looked up on the site's LPR camera) or ``at``
-        (a site-local timestamp, for sites with no LPR camera). Footage exports
-        are submitted but not waited for - poll ``get_claim`` for the clips.
+        Supply ``plate``, ``at`` (a site-local timestamp), or **both** - the
+        plate is preferred and the timestamp is the fallback when no confident
+        LPR match exists. That combination is the normal case: only some sites
+        have a working LPR camera, and roughly a quarter of claims arrive with
+        no plate at all.
+
+        ``clips`` decides whether footage is exported. Under ``"auto"``, an
+        exact LPR match gets narrow clips, while a typed estimate gets a wide
+        scrubbable link instead - because a 90-second clip centred on someone's
+        recollection often misses the car, and a clip of the wrong car is worse
+        than no clip.
         """
         return damage_claims.collect(
             self, location, customer, plate, at, date, claim_ref,
-            occurrence, fuzzy, reuse_existing,
+            occurrence, reuse_existing, clips, min_confidence,
+            estimate_window_minutes,
         )
 
     def get_claim(

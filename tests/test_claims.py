@@ -11,6 +11,7 @@ from spotai.claims import (
     derive_status,
     device_name,
     plan_windows,
+    select_share_cameras,
     signed_url_expiry,
     union_span,
 )
@@ -194,3 +195,77 @@ class TestPlateHelpers:
 
     def test_fuzzy_empty(self):
         assert fuzzy_variants("") == []
+
+
+class TestSelectShareCameras:
+    """Spot caps a shared view at 16 cameras. A real site can exceed that:
+    up to 15 on inspection arches plus 8 in the tunnel."""
+
+    @staticmethod
+    def cams(n_entry, n_tunnel, n_exit):
+        from spotai.claims import ClaimCamera
+        out, cid = [], 1
+        for role, count in (("entry", n_entry), ("tunnel", n_tunnel),
+                            ("exit", n_exit)):
+            for _ in range(count):
+                out.append(ClaimCamera(cid, f"{role}-{cid}", role, cid, "", ""))
+                cid += 1
+        return out
+
+    def test_under_the_cap_keeps_everything(self):
+        cams = self.cams(2, 4, 2)
+        assert select_share_cameras(cams) == [c.camera_id for c in cams]
+
+    def test_exactly_at_the_cap_keeps_everything(self):
+        cams = self.cams(4, 8, 4)
+        assert len(select_share_cameras(cams)) == 16
+
+    def test_full_23_camera_site_fits_the_cap(self):
+        assert len(select_share_cameras(self.cams(7, 8, 8))) == 16
+
+    def test_exit_arch_is_never_dropped(self):
+        # The exit arch is the footage that shows the damage. Taking the
+        # first 16 in tunnel order would drop it entirely.
+        cams = self.cams(7, 8, 8)
+        chosen = set(select_share_cameras(cams))
+        exits = [c.camera_id for c in cams if c.role == "exit"]
+        assert all(e in chosen for e in exits)
+
+    def test_entry_arch_is_never_dropped(self):
+        cams = self.cams(7, 8, 8)
+        chosen = set(select_share_cameras(cams))
+        entries = [c.camera_id for c in cams if c.role == "entry"]
+        assert all(e in chosen for e in entries)
+
+    def test_tunnel_cameras_are_the_ones_thinned(self):
+        cams = self.cams(7, 8, 8)
+        chosen = set(select_share_cameras(cams))
+        tunnel = [c.camera_id for c in cams if c.role == "tunnel"]
+        kept = [t for t in tunnel if t in chosen]
+        assert 0 < len(kept) < len(tunnel)
+
+    def test_thinned_tunnel_cameras_are_spread_not_contiguous(self):
+        # An even spread covers the tunnel; a contiguous run leaves a blind
+        # stretch where the damage may have happened.
+        cams = self.cams(1, 20, 1)   # 22 total, so the tunnel must be thinned
+        chosen = select_share_cameras(cams)
+        tunnel_ids = [c.camera_id for c in cams if c.role == "tunnel"]
+        kept = [t for t in tunnel_ids if t in set(chosen)]
+        assert kept[-1] - kept[0] > len(kept)
+
+    def test_arches_alone_exceeding_the_cap_still_returns_16(self):
+        assert len(select_share_cameras(self.cams(10, 0, 10))) == 16
+
+    def test_arch_overflow_keeps_both_arches_represented(self):
+        cams = self.cams(10, 0, 10)
+        chosen = set(select_share_cameras(cams))
+        assert any(c.camera_id in chosen for c in cams if c.role == "entry")
+        assert any(c.camera_id in chosen for c in cams if c.role == "exit")
+
+    def test_result_is_in_tunnel_order(self):
+        chosen = select_share_cameras(self.cams(7, 8, 8))
+        assert chosen == sorted(chosen)
+
+    def test_no_duplicates(self):
+        chosen = select_share_cameras(self.cams(7, 8, 8))
+        assert len(chosen) == len(set(chosen))

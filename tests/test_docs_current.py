@@ -142,3 +142,33 @@ class TestVersionsAgree:
             "The LLM guide references a different version than "
             "spotai.__version__ (" + spotai.__version__ + ")"
         )
+
+
+class TestSiteMapGuide:
+    """The camera-directory procedure is the hardest part to get right, so it
+    gets its own guide and its own guard."""
+
+    SITE_MAP_GUIDE = ROOT / "llm" / "build-site-map-guide.md"
+
+    def test_guide_exists(self):
+        assert self.SITE_MAP_GUIDE.is_file()
+
+    def test_readme_links_it(self):
+        assert "llm/build-site-map-guide.md" in README.read_text(encoding="utf-8")
+
+    def test_main_agent_guide_links_it(self):
+        assert "build-site-map-guide.md" in LLM_GUIDE.read_text(encoding="utf-8")
+
+    def test_covers_the_scale_that_breaks_naive_setups(self):
+        text = self.SITE_MAP_GUIDE.read_text(encoding="utf-8")
+        assert "23" in text          # arches + tunnel at full size
+        assert "16" in text          # the share-link cap
+        assert "4" in text           # cameras per device
+
+    def test_warns_that_order_cannot_be_inferred(self):
+        text = self.SITE_MAP_GUIDE.read_text(encoding="utf-8").lower()
+        assert "no position" in text or "cannot be derived" in text
+
+    def test_explains_the_shared_arch_offset_rule(self):
+        text = self.SITE_MAP_GUIDE.read_text(encoding="utf-8").lower()
+        assert "arch" in text and "same" in text

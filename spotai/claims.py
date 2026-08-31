@@ -82,6 +82,52 @@ def derive_status(states: list[str]) -> str:
     return "partial"
 
 
+def _even_sample(items: list, k: int) -> list:
+    """Take k items spread evenly across the list, keeping order."""
+    if k <= 0:
+        return []
+    if k >= len(items):
+        return list(items)
+    step = len(items) / k
+    return [items[int(i * step)] for i in range(k)]
+
+
+def select_share_cameras(
+    cameras: list["ClaimCamera"], limit: int = MAX_SHARED_CAMERAS
+) -> list[int]:
+    """Choose which cameras go in the shared link when there are too many.
+
+    Spot caps a shared view at 16 cameras, but a site can easily exceed that -
+    up to 15 on inspection arches plus 8 in the tunnel.
+
+    Taking the first 16 in tunnel order would drop the *exit* arch, which is
+    the footage that actually shows the damage. So the arches are kept first
+    (exit, then entry), and any remaining slots go to an even spread of tunnel
+    cameras rather than a contiguous run.
+
+    Returns camera ids in tunnel order.
+    """
+    if len(cameras) <= limit:
+        return [c.camera_id for c in cameras]
+
+    exits = [c for c in cameras if c.role == "exit"]
+    entries = [c for c in cameras if c.role == "entry"]
+    tunnel = [c for c in cameras if c.role == "tunnel"]
+    arches = exits + entries
+
+    if len(arches) >= limit:
+        # Arches alone overflow: sample both, favouring the exit arch.
+        exit_k = min(len(exits), max(1, round(limit * len(exits) / len(arches))))
+        chosen = _even_sample(exits, exit_k) + _even_sample(
+            entries, limit - exit_k
+        )
+    else:
+        chosen = arches + _even_sample(tunnel, limit - len(arches))
+
+    keep = {c.camera_id for c in chosen}
+    return [c.camera_id for c in cameras if c.camera_id in keep]
+
+
 def signed_url_expiry(url: str) -> datetime | None:
     """When a Spot clip URL stops working.
 

@@ -22,6 +22,7 @@ from .claims import (
     derive_status,
     device_name,
     plan_windows,
+    select_share_cameras,
     signed_url_expiry,
     union_span,
 )
@@ -269,7 +270,7 @@ def make_share_link(client: "SpotAI", cameras: list[ClaimCamera]) -> str | None:
     try:
         start, end = union_span(cameras)
         shared = client.create_shared_search(
-            [c.camera_id for c in cameras], start, end
+            select_share_cameras(cameras), start, end
         )
         return shared.get("link")
     except SpotError:

@@ -173,6 +173,13 @@ wheaton = SiteMap(
 
 **List the cameras in the order a car drives past them.** That's the trick.
 
+> **Doing this with an AI assistant?** Point it at
+> [`llm/build-site-map-guide.md`](llm/build-site-map-guide.md). It walks
+> through pulling your locations and cameras, proposing which are tunnel
+> cameras and which is the LPR camera, and confirming the order with you
+> before writing `site_maps.json`. Much faster than doing it by hand for
+> a site with 30+ cameras.
+
 ### The three roles
 
 | Role | Meaning |
@@ -543,7 +550,7 @@ you.
 | Attributes aren't validated | Events whose attributes don't match the schema are still accepted. |
 | Device name ≤ 40 chars | Enforced with a `400`. Names are truncated, keeping the date. |
 | Cameras per device ≤ 4 | Enforced with a `400`. |
-| Shared link ≤ 16 cameras, ≤ 7 days | Hard ceilings. |
+| Shared link ≤ 16 cameras, ≤ 7 days | Hard ceilings. A 23-camera site keeps both inspection arches in the link and thins mid-tunnel cameras; every clip is still exported. |
 | Exports sometimes wedge | One observed at 0% for 25+ minutes while a sibling finished in 2m36s. |
 
 ---
@@ -601,7 +608,8 @@ recoverable record rather than orphaned export jobs nothing points at.
 | File | Audience |
 |---|---|
 | This README | People — the complete guide |
-| [`llm/spotai-agent-guide.md`](llm/spotai-agent-guide.md) | AI coding assistants |
+| [`llm/spotai-agent-guide.md`](llm/spotai-agent-guide.md) | AI coding assistants — using the library |
+| [`llm/build-site-map-guide.md`](llm/build-site-map-guide.md) | AI coding assistants — building your camera directory |
 | [`docs/GUIDE.md`](docs/GUIDE.md) | Same guide, standalone copy |
 | [`CONTRIBUTING.md`](CONTRIBUTING.md) | Changing the library |
 

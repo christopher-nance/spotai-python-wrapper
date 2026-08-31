@@ -9,6 +9,11 @@ counter-intuitive and will silently produce broken code if ignored.
 
 ---
 
+**Building `site_maps.json` for the first time?** Follow
+[`build-site-map-guide.md`](build-site-map-guide.md) instead — it is the
+interactive procedure for pulling locations and cameras and confirming
+tunnel order with the user.
+
 ## 0. Critical rules — violating these produces silent breakage
 
 1. **Never persist a clip URL.** `Clip.url` is a pre-signed GCS URL valid for
@@ -278,7 +283,7 @@ an event stream — a plate seen twice yields only first and last.
 |---|---|---|
 | Device name | 40 chars | `400`; library truncates, keeps the date |
 | Cameras per device | 4 | `400`; library validates in `SiteMap` |
-| Shared link cameras | 16 | library slices |
+| Shared link cameras | 16 | `select_share_cameras` keeps both arches, thins tunnel |
 | Shared link expiry | 604800s (7d) | library clamps |
 | Event duration | 600000ms | library clamps |
 | Event buffer | 120000ms | — |
@@ -429,7 +434,12 @@ part that is unit-tested without network access.
   and is asynchronous. `get_claim(device_id)` without `event_id` works.
 - **Event attributes are not validated** against the event type schema. Bad
   attributes are accepted silently.
-- **Two exit cameras share `offset_seconds`.** Expected — they see the car at
-  the same moment.
+- **Several cameras share `offset_seconds`.** Expected — an inspection arch
+  is many cameras at one physical point, all seeing the car at once. Give
+  a *mid-tunnel* arch an explicit identical offset; entry and exit arches
+  get it automatically from their role.
+- **A 23-camera site's share link holds 16.** `select_share_cameras` keeps
+  the exit arch first (it shows the damage), then the entry arch, then an
+  even spread of tunnel cameras. All clips are still exported.
 - **A 400 on device creation** usually means a name over 40 chars or more than
   4 cameras.

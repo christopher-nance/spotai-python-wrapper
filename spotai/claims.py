@@ -41,6 +41,42 @@ def device_name(customer: str, date_text: str, limit: int = MAX_DEVICE_NAME) -> 
     return name + suffix
 
 
+def device_name_part(
+    customer: str,
+    date_text: str,
+    part: int,
+    total: int,
+    limit: int = MAX_DEVICE_NAME,
+) -> str:
+    """Name one device of a multi-device claim.
+
+    Spot caps a device at 4 cameras, so a 23-camera claim needs 6 devices.
+    They must be individually named but still read as one claim, and still fit
+    in 40 characters - so the customer is squeezed, never the date or the part.
+    """
+    if total <= 1:
+        return device_name(customer, date_text, limit)
+    suffix = " | " + (date_text or "") + " (" + str(part) + "/" + str(total) + ")"
+    room = limit - len(suffix)
+    if room < 1:
+        return (customer or "Unknown")[:limit]
+    name = (customer or "Unknown").strip() or "Unknown"
+    if len(name) > room:
+        name = name[:room].rstrip()
+    return name + suffix
+
+
+def chunk_cameras(camera_ids: list[int], size: int = 4) -> list[list[int]]:
+    """Split cameras into device-sized groups.
+
+    Spot allows at most 4 cameras per integration device. Rather than silently
+    dropping the rest, a claim that wants more gets more devices.
+    """
+    if size < 1:
+        raise ValueError("chunk size must be >= 1")
+    return [camera_ids[i:i + size] for i in range(0, len(camera_ids), size)] or [[]]
+
+
 def build_external_id(
     slug: str,
     claim_ref: str | None,
@@ -61,6 +97,18 @@ def build_external_id(
         date_text or "NODATE",
     ]
     return ":".join(p.replace(":", "-") for p in parts)[:limit]
+
+
+def part_external_id(base: str, part: int, limit: int = MAX_EXTERNAL_ID) -> str:
+    """external_id for device N of a multi-device claim.
+
+    Part 1 keeps the base id unchanged, so the idempotency lookup - which
+    searches for the base - still finds the claim.
+    """
+    if part <= 1:
+        return base
+    suffix = "#P" + str(part)
+    return (base[: limit - len(suffix)] + suffix)
 
 
 # ----------------------------------------------------------------- status
@@ -172,6 +220,9 @@ class Claim:
     share_link: str | None = None
     reused: bool = False
     cameras: list[ClaimCamera] = field(default_factory=list)
+    # Every device this claim spans. Spot caps a device at 4 cameras, so a
+    # claim wanting more gets one device per four; device_id is the first.
+    device_ids: list[int] = field(default_factory=list)
     # Where T0 came from: "plate" (exact LPR hit) or "estimate" (typed time).
     anchor: str = "plate"
     matched_plate: str | None = None
@@ -188,6 +239,7 @@ class Claim:
             "id": self.id,
             "t0": iso_z(self.t0),
             "device_id": self.device_id,
+            "device_ids": self.device_ids or [self.device_id],
             "event_id": self.event_id,
             "location": self.location,
             "status": self.status,

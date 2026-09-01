@@ -563,6 +563,7 @@ It expired — they last an hour. Call `get_claim` again.
 |---|---|
 | `collect_damage_claim(...)` | Build a claim case. Returns a `Claim`. |
 | `get_claim(device_id, event_id=None)` | Current status, clips, problems. |
+| `site.all_camera_ids()` | Every camera, for a claim that wants all of them on devices. |
 | `match_plate(location, plate, date=None)` | Rank what the plate reader saw against what was typed. |
 | `site_map(location)` | Look up a configured `SiteMap`. |
 
@@ -620,7 +621,7 @@ you.
 | Event ingestion is async | Returns `202`; an event may not be queryable for a moment. |
 | Attributes aren't validated | Events whose attributes don't match the schema are still accepted. |
 | Device name ≤ 40 chars | Enforced with a `400`. Names are truncated, keeping the date. |
-| Cameras per device ≤ 4 | Enforced with a `400`. |
+| Cameras per device ≤ 4 | Enforced with a `400`. A claim wanting more gets one device per four. |
 | Shared link ≤ 16 cameras, ≤ 7 days | Hard ceilings. A 23-camera site keeps both inspection arches in the link and thins mid-tunnel cameras; every clip is still exported. |
 | Exports sometimes wedge | One observed at 0% for 25+ minutes while a sibling finished in 2m36s. |
 
@@ -638,8 +639,21 @@ The share link shows up to 16. The case record inside Spot shows 4 — Spot's
 limit, not ours.
 
 **Why only 4 on the case?** Spot allows at most four cameras per integration
-device. The library picks the most useful four; the rest are still in the
-clips and the share link. Override with `key_camera_ids`.
+device. By default the library picks the most useful four.
+
+**If you want more, ask for more** — set `key_camera_ids` to as many cameras as
+you like and the library creates one device per four:
+
+```python
+wheaton.key_camera_ids = wheaton.all_camera_ids()   # all of them
+```
+
+A 23-camera claim becomes 6 devices named `J.Smith | 2026-08-30 (1/6)`
+through `(6/6)`, each carrying its own event so all 23 surface natively in
+Spot. Re-submitting still returns the same claim rather than another six.
+
+Once you have pulled the clips into your own records you can delete the extra
+devices in Spot — nothing else depends on them.
 
 **Does this store video?** No, it gives you links. Spot deletes video after 7
 days, so download anything you need to keep.

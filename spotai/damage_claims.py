@@ -29,8 +29,11 @@ from .claims import (
     ClaimResult,
     Clip,
     build_external_id,
+    chunk_cameras,
     derive_status,
     device_name,
+    device_name_part,
+    part_external_id,
     plan_windows,
     select_share_cameras,
     signed_url_expiry,
@@ -46,7 +49,7 @@ from .errors import (
 )
 from .lpr import lookup_plate
 from .matching import LIKELY, is_usable, rank_candidates
-from .sitemap import SiteMap
+from .sitemap import MAX_DEVICE_CAMERAS, SiteMap
 from .timewin import get_zone, iso_z, parse_api_ts, parse_local
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -200,14 +203,24 @@ def collect(
         return claim_from_existing(client, existing, site, anchor, external_id)
 
     # 1. Record first. Identity before work, so nothing is orphaned.
-    device = client.create_device(
-        integration_id,
-        name=device_name(customer, anchor.date_text),
-        camera_ids=site.key_camera_ids,
-        tags=[site.slug.title(), CLAIM_TAG],
-        external_id=external_id,
-    )
-    device_id = int(device["id"])
+    #
+    # Spot caps a device at 4 cameras. A claim that wants more gets more
+    # devices rather than losing cameras - part 1 keeps the base external_id
+    # so the idempotency lookup still finds the claim.
+    groups = chunk_cameras(site.key_camera_ids, MAX_DEVICE_CAMERAS)
+    device_ids: list[int] = []
+    for index, group in enumerate(groups, 1):
+        created = client.create_device(
+            integration_id,
+            name=device_name_part(
+                customer, anchor.date_text, index, len(groups)
+            ),
+            camera_ids=group,
+            tags=[site.slug.title(), CLAIM_TAG],
+            external_id=part_external_id(external_id, index),
+        )
+        device_ids.append(int(created["id"]))
+    device_id = device_ids[0]
 
     # 2. Export only when it is worth it.
     export = clips == "always" or (clips == "auto" and anchor.precise)
@@ -231,48 +244,38 @@ def collect(
         client, cameras, anchor, site, estimate_window_minutes
     )
 
-    # 3. Attach the event, carrying enough to rebuild the claim from Spot alone.
+    # 3. Attach an event to every device. Spot surfaces footage from the
+    # cameras on the device an event belongs to, so a multi-device claim needs
+    # the event repeated - otherwise only the first four cameras ever show.
+    attributes = _event_attributes(
+        claim_ref, plate, anchor, customer, site, share_link, cameras
+    )
     try:
-        client.create_event(
-            integration_id,
-            event_type_id=event_type_id,
-            device_id=device_id,
-            timestamp=iso_z(anchor.t0),
-            duration_ms=min(site.transit_seconds * 1000, MAX_EVENT_DURATION_MS),
-            attributes={
-                "claim_ref": claim_ref or "",
-                "plate": anchor.plate or (plate or ""),
-                "typed_plate": plate or "",
-                "customer": customer,
-                "location": site.location_name,
-                "share_link": share_link or "",
-                "t0": iso_z(anchor.t0),
-                "anchor": anchor.kind,
-                "match_confidence": round(anchor.confidence or 0.0, 3),
-                "footage_jobs": [
-                    {
-                        "camera_id": c.camera_id,
-                        "job_id": c.job_id or 0,
-                        "name": c.name,
-                        "role": c.role,
-                        "offset_seconds": c.offset_seconds,
-                    }
-                    for c in cameras
-                ],
-            },
-        )
+        for did in device_ids:
+            client.create_event(
+                integration_id,
+                event_type_id=event_type_id,
+                device_id=did,
+                timestamp=iso_z(anchor.t0),
+                duration_ms=min(
+                    site.transit_seconds * 1000, MAX_EVENT_DURATION_MS
+                ),
+                attributes=attributes,
+            )
     except SpotError as exc:
         raise SpotAPIError(
-            "Exports were submitted and device " + str(device_id) + " ("
-            + external_id + ") was created, but attaching the event failed: "
-            + str(exc) + "\nRe-run with the same arguments to retry; the "
-            "existing device will be reused."
+            "Exports were submitted and device(s) "
+            + ", ".join(str(i) for i in device_ids) + " (" + external_id
+            + ") were created, but attaching the event failed: " + str(exc)
+            + ". Re-run with the same arguments to retry; the existing "
+            "devices will be reused."
         ) from exc
 
     return Claim(
         id=external_id,
         t0=anchor.t0,
         device_id=device_id,
+        device_ids=device_ids,
         event_id=latest_event_id(client, integration_id, device_id),
         location=site.location_name,
         status=derive_status([c.state for c in cameras]) if export else "link-only",
@@ -364,6 +367,43 @@ def fetch(
 
 
 # ------------------------------------------------------------------ helpers
+def _event_attributes(
+    claim_ref: str | None,
+    typed_plate: str | None,
+    anchor: Anchor,
+    customer: str,
+    site: SiteMap,
+    share_link: str | None,
+    cameras: list[ClaimCamera],
+) -> dict[str, Any]:
+    """One payload, reused for every device's event.
+
+    Carries the full export job list so a claim can be rebuilt from Spot alone
+    even if the caller's database loses the handle.
+    """
+    return {
+        "claim_ref": claim_ref or "",
+        "plate": anchor.plate or (typed_plate or ""),
+        "typed_plate": typed_plate or "",
+        "customer": customer,
+        "location": site.location_name,
+        "share_link": share_link or "",
+        "t0": iso_z(anchor.t0),
+        "anchor": anchor.kind,
+        "match_confidence": round(anchor.confidence or 0.0, 3),
+        "footage_jobs": [
+            {
+                "camera_id": c.camera_id,
+                "job_id": c.job_id or 0,
+                "name": c.name,
+                "role": c.role,
+                "offset_seconds": c.offset_seconds,
+            }
+            for c in cameras
+        ],
+    }
+
+
 def make_share_link(
     client: "SpotAI",
     cameras: list[ClaimCamera],

@@ -8,6 +8,9 @@ from spotai import Camera, SiteMap
 from spotai.claims import (
     MAX_DEVICE_NAME,
     build_external_id,
+    chunk_cameras,
+    device_name_part,
+    part_external_id,
     derive_status,
     device_name,
     plan_windows,
@@ -269,3 +272,83 @@ class TestSelectShareCameras:
     def test_no_duplicates(self):
         chosen = select_share_cameras(self.cams(7, 8, 8))
         assert len(chosen) == len(set(chosen))
+
+
+class TestMultiDeviceClaims:
+    """Spot caps a device at 4 cameras. A 23-camera claim needs 6 devices
+    rather than losing 19 cameras."""
+
+    def test_chunks_of_four(self):
+        assert chunk_cameras(list(range(1, 24))) == [
+            [1, 2, 3, 4], [5, 6, 7, 8], [9, 10, 11, 12],
+            [13, 14, 15, 16], [17, 18, 19, 20], [21, 22, 23],
+        ]
+
+    def test_twenty_three_cameras_need_six_devices(self):
+        assert len(chunk_cameras(list(range(23)))) == 6
+
+    def test_four_or_fewer_stays_one_device(self):
+        assert len(chunk_cameras([1, 2, 3, 4])) == 1
+        assert len(chunk_cameras([1])) == 1
+
+    def test_no_chunk_exceeds_the_cap(self):
+        assert all(len(c) <= 4 for c in chunk_cameras(list(range(23))))
+
+    def test_every_camera_survives_chunking(self):
+        cams = list(range(23))
+        assert [c for group in chunk_cameras(cams) for c in group] == cams
+
+    def test_empty_still_yields_one_group(self):
+        assert chunk_cameras([]) == [[]]
+
+    def test_rejects_bad_chunk_size(self):
+        with pytest.raises(ValueError):
+            chunk_cameras([1, 2], size=0)
+
+
+class TestMultiDeviceNaming:
+    def test_single_device_has_no_part_suffix(self):
+        assert device_name_part("J.Smith", "2026-08-30", 1, 1) == "J.Smith | 2026-08-30"
+
+    def test_multi_device_is_numbered(self):
+        assert device_name_part("J.Smith", "2026-08-30", 2, 6) == (
+            "J.Smith | 2026-08-30 (2/6)"
+        )
+
+    def test_parts_still_fit_the_forty_char_cap(self):
+        for part in range(1, 7):
+            name = device_name_part("Bartholomew Fotheringay", "2026-08-30", part, 6)
+            assert len(name) <= MAX_DEVICE_NAME, name
+
+    def test_part_marker_survives_truncation(self):
+        name = device_name_part("A" * 60, "2026-08-30", 3, 6)
+        assert name.endswith("(3/6)")
+        assert len(name) <= MAX_DEVICE_NAME
+
+    def test_parts_sort_together(self):
+        names = [device_name_part("J.Smith", "2026-08-30", p, 6) for p in range(1, 7)]
+        assert names == sorted(names)
+
+
+class TestPartExternalIds:
+    def test_first_part_keeps_the_base_id(self):
+        # Idempotency looks up the base, so part 1 must not be suffixed.
+        assert part_external_id("WHEATON:C1:ABC:2026-08-30", 1) == (
+            "WHEATON:C1:ABC:2026-08-30"
+        )
+
+    def test_later_parts_are_suffixed(self):
+        assert part_external_id("WHEATON:C1:ABC:2026-08-30", 3) == (
+            "WHEATON:C1:ABC:2026-08-30#P3"
+        )
+
+    def test_all_parts_are_unique(self):
+        base = "WHEATON:C1:ABC:2026-08-30"
+        ids = [part_external_id(base, p) for p in range(1, 7)]
+        assert len(set(ids)) == 6
+
+    def test_respects_the_length_cap(self):
+        assert len(part_external_id("X" * 255, 6)) <= 255
+
+    def test_suffix_survives_truncation(self):
+        assert part_external_id("X" * 255, 6).endswith("#P6")

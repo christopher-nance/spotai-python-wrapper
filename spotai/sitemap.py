@@ -115,12 +115,20 @@ class SiteMap:
     def camera_ids(self) -> list[int]:
         return [c.id for c in self.ordered_cameras()]
 
-    def default_key_cameras(self) -> list[int]:
-        """The four most probative cameras, for the Spot device.
+    def all_camera_ids(self) -> list[int]:
+        """Every camera, for a claim that wants all of them on devices.
 
-        A Spot integration device accepts at most four cameras, so a claim
-        can only surface a subset natively. Pick the first of each role plus
-        the last camera in the tunnel.
+        Set ``key_camera_ids=site.all_camera_ids()`` to have every camera
+        surface natively in Spot; the collector will create one device per
+        four.
+        """
+        return self.camera_ids()
+
+    def default_key_cameras(self) -> list[int]:
+        """The four most probative cameras, for a single-device claim.
+
+        A Spot integration device accepts at most four cameras. This is the
+        default; pass a longer ``key_camera_ids`` to span several devices.
         """
         picks: list[int] = []
         for role in ROLES:
@@ -144,11 +152,9 @@ class SiteMap:
                 "key_camera_ids references cameras not in this site map: "
                 + ", ".join(str(u) for u in unknown)
             )
-        if len(self.key_camera_ids) > MAX_DEVICE_CAMERAS:
-            raise ValueError(
-                "Spot allows at most " + str(MAX_DEVICE_CAMERAS)
-                + " cameras per device; got " + str(len(self.key_camera_ids))
-            )
+        # No cap here on purpose. Spot allows 4 cameras per *device*, but a
+        # claim may span several devices, so any number is legal - the
+        # collector chunks them.
 
     @property
     def slug(self) -> str:

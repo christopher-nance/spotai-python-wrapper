@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "spotai-python-wrapper"
-version = "0.2.0"
+version = "0.3.0"
 description = "Unofficial Python wrapper for the Spot AI REST API, with a damage-claim footage collector"
 readme = "README.md"
 requires-python = ">=3.9"

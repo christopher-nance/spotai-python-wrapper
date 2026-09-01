@@ -194,9 +194,20 @@ timing one car.
 
 ## Step 5 — Choose the four device cameras
 
-Spot allows **at most 4 cameras** on an integration device, so the case record
-inside Spot surfaces only four. All the rest are still exported and still in
-the share link — this choice only affects what Spot shows natively.
+Spot allows **at most 4 cameras** on an integration device. That is a limit on
+a *device*, not on a claim: `key_camera_ids` may be any length, and the
+collector creates one device per four.
+
+Ask the user which they want:
+
+- **Four cameras, one device** (default) — one tidy named entry per claim
+- **All cameras, several devices** — everything surfaces natively in Spot, at
+  the cost of N entries per claim. Set
+  `key_camera_ids=site.all_camera_ids()`. A 23-camera site produces 6 devices
+  named `(1/6)` through `(6/6)`; the user can delete the extras once clips are
+  filed elsewhere.
+
+Either way all cameras are exported and the share link is unaffected.
 
 The default picks the first `entry`, first `tunnel`, first `exit`, and the
 last camera. For a damage claim, better is usually:

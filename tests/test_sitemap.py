@@ -86,9 +86,16 @@ class TestKeyCameras:
         with pytest.raises(ValueError, match="not in this site map"):
             make_site(key_camera_ids=[999])
 
-    def test_rejects_more_than_four(self):
-        with pytest.raises(ValueError, match="at most 4"):
-            make_site(key_camera_ids=[1, 2, 3, 4, 5])
+    def test_allows_more_than_four_for_multi_device_claims(self):
+        # Spot caps a *device* at 4 cameras, not a claim. More cameras means
+        # more devices, which beats silently losing them.
+        site = make_site(key_camera_ids=[1, 2, 3, 4, 5, 6])
+        assert site.key_camera_ids == [1, 2, 3, 4, 5, 6]
+
+    def test_all_camera_ids_can_be_used_wholesale(self):
+        site = make_site(key_camera_ids=[])
+        site2 = make_site(key_camera_ids=site.all_camera_ids())
+        assert len(site2.key_camera_ids) == len(site2.cameras)
 
 
 class TestValidation:

@@ -2,7 +2,7 @@
 
 Drop this file into your project as `CLAUDE.md`, `AGENTS.md`, or attach it to
 a Codex/Claude Code session. It is a complete operating manual for writing
-correct code against `spotai-python-wrapper` v0.2.0.
+correct code against `spotai-python-wrapper` v0.3.0.
 
 Optimise for correctness over brevity. Several API behaviours below are
 counter-intuitive and will silently produce broken code if ignored.
@@ -117,7 +117,8 @@ never overwritten.
 ```python
 claim.id          # str  external_id, e.g. "WHEATON:CLAIM-118:ABC1234:2026-08-30"
 claim.t0          # datetime, timezone-aware UTC
-claim.device_id   # int      <- PERSIST
+claim.device_id   # int      <- PERSIST (the first device)
+claim.device_ids  # list[int] - every device this claim spans
 claim.event_id    # str|None <- PERSIST (may be None; async ingestion)
 claim.location    # str
 claim.status      # str
@@ -282,6 +283,27 @@ timestamp path.
 Returning `[]` is also correct when the car was simply never read - the LPR
 misses vehicles. Do not treat an empty list as an error.
 
+### Claims spanning more than 4 cameras
+
+`key_camera_ids` is **not** capped at 4. Set it to any length and the collector
+chunks it into devices of 4:
+
+```python
+site.key_camera_ids = site.all_camera_ids()   # 23 cameras -> 6 devices
+```
+
+- Devices are named `{customer} | {date} (n/N)`, truncated to fit 40 chars
+- Part 1 keeps the base `external_id`; later parts get `#P2`, `#P3`, ... so
+  the idempotency lookup still finds the claim by its base id
+- **An event is created on every device.** Spot surfaces footage from the
+  cameras of the device an event belongs to, so without repeating the event
+  only the first four cameras would ever show
+- `chunk_cameras(ids, size=4)` and `part_external_id(base, n)` are exposed for
+  callers that need the same grouping
+
+Re-submitting an identical claim reuses all its devices; it does not create a
+second set.
+
 ### `occurrence`
 
 The LPR holds a car ~37–127s (median ~54s) between `first_seen` and
@@ -352,7 +374,7 @@ an event stream — a plate seen twice yields only first and last.
 | Limit | Value | Enforcement |
 |---|---|---|
 | Device name | 40 chars | `400`; library truncates, keeps the date |
-| Cameras per device | 4 | `400`; library validates in `SiteMap` |
+| Cameras per device | 4 | `400`; a claim wanting more is split across devices |
 | Shared link cameras | 16 | `select_share_cameras` keeps both arches, thins tunnel |
 | Shared link expiry | 604800s (7d) | library clamps |
 | Event duration | 600000ms | library clamps |

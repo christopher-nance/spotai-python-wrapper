@@ -171,17 +171,27 @@ seeded to `0`, every `exit` camera to `transit_seconds`.
 
 **But a mid-tunnel arch does not.** If a site has an inspection arch partway
 down, marking its 5 cameras as `tunnel` spreads them across five different
-offsets, which is wrong. Set their `offset_seconds` **explicitly and
-identically**:
+offsets, which is wrong.
+
+Use `arch=` — label the members and state the offset once:
 
 ```python
-Camera(id=101, name="Mid Arch D-T", role="tunnel", offset_seconds=120),
-Camera(id=102, name="Mid Arch D-B", role="tunnel", offset_seconds=120),
-Camera(id=103, name="Mid Arch P-T", role="tunnel", offset_seconds=120),
+Camera(id=101, name="Mid Arch D-T", role="tunnel", arch="mid", offset_seconds=120),
+Camera(id=102, name="Mid Arch D-B", role="tunnel", arch="mid"),
+Camera(id=103, name="Mid Arch P-T", role="tunnel", arch="mid"),
 ```
 
-Explicit offsets are never overwritten by seeding. Ask the user whether any
-mid-tunnel cameras sit together on an arch.
+Every member inherits the stated offset, members are excluded from the even
+spread, and two conflicting offsets on one arch raise `ValueError` instead of
+silently picking one. Repeating the number by hand still works, but it drifts
+the first time somebody edits one camera and not its neighbours.
+
+**Do not assume the arch matches the naming.** At a measured site the
+overhead `TOP` camera turned out to be mounted on the *entrance* arch, not
+partway down the tunnel as its position in the name ordering suggested. Ask
+which cameras are physically on each frame; do not infer it from names.
+
+Ask the user whether any mid-tunnel cameras sit together on an arch.
 
 ### Transit time
 
@@ -189,6 +199,37 @@ Ask: *"How long does a car take from entrance to exit, in seconds?"* Typical
 is 180–300. Default 240. This is the single number that drives every tunnel
 offset, so it is worth getting roughly right; it can be refined later by
 timing one car.
+
+**The default is not a safe placeholder.** One measured site came in at 156s
+against the 240s default — so every exit clip built on the default would have
+opened 84 seconds *after* the car had already left frame. A wrong transit time
+does not degrade the footage, it misses it entirely, and the failure is silent:
+the clip exports fine and simply contains the wrong moment. Treat any site
+still on 240 as unverified.
+
+### Clip length per camera
+
+`clip_seconds` on the SiteMap is the default; `clip_seconds` on a Camera
+overrides it. Dwell varies far more than expected — measured at one site:
+
+```
+SS 1   50s      SS 4   42s
+SS 2   52s      SS 5   35s
+SS 3   51s      exit arch  12s
+```
+
+The exit arch, which is the footage that shows the damage, held the car for
+12 seconds while mid-tunnel positions held it for 50. A single site-wide clip
+length either truncates the tunnel or wraps the exit in a minute of empty
+frame. Ask for the dwell at each position while the user is timing the car —
+it costs nothing extra and it is the same observation.
+
+### Ask for entry and exit times, not just the total
+
+When the user times a car, ask them to note **when the car enters and leaves
+each camera's view**, not merely the total transit. Entry gives
+`offset_seconds`, and the difference gives `clip_seconds`. Both numbers come
+from one pass.
 
 ---
 
@@ -309,7 +350,9 @@ Then delete the test claim so it does not pollute the case list.
 - [ ] Irrelevant cameras excluded; exclusions shown to the user
 - [ ] LPR camera confirmed, and proven to return plates
 - [ ] Tunnel order confirmed by the user, not inferred
-- [ ] Same-arch cameras share an identical explicit offset
+- [ ] Same-arch cameras grouped with `arch=`, offset stated once
+- [ ] Arch membership confirmed physically, not inferred from names
+- [ ] Per-camera `clip_seconds` set from observed dwell where known
 - [ ] `transit_seconds` asked for, not assumed
 - [ ] `key_camera_ids` chosen deliberately
 - [ ] 16-camera share cap explained if the site exceeds it
@@ -333,6 +376,10 @@ cameras = [Camera(id=c["id"]) for c in spot.cameras(location_ids=[1001])]
 Camera(id=101, name="Mid Arch D-T", role="tunnel"),
 Camera(id=102, name="Mid Arch D-B", role="tunnel"),
 Camera(id=103, name="Mid Arch P-T", role="tunnel"),
+
+# WRONG - shipping the 240s default as if it were measured. One real site
+# was 156s; the exit clips would have opened after the car had gone.
+site = SiteMap(..., transit_seconds=240)   # never timed
 
 # WRONG - two LPR candidates, picked silently
 lpr_camera_id = [c for c in cams if "LPR" in c["name"]][0]

@@ -170,3 +170,131 @@ class TestFailures:
     def test_neither_plate_nor_time_raises(self):
         with pytest.raises(ValueError, match="plate= or at="):
             resolve_anchor(None, site(lpr=99), None, None, None, "first")
+
+
+class TestPlateWindowSeparatesRepeatVisits:
+    """The LPR report aggregates per plate PER QUERY RANGE.
+
+    A car that washed three times in a day returns one row spanning its first
+    read to its last. Anchoring on that row puts T0 on the earliest visit, so
+    a claim about a later wash clips the wrong one - and the footage looks
+    perfectly valid, which is what makes it dangerous. Measured live: 18 of
+    994 cars in one day made repeat visits, one spanning 20 minutes.
+    """
+
+    class WindowedClient:
+        """Returns a merged row for a wide range, one visit for a narrow one."""
+
+        def __init__(self):
+            self.ranges = []
+
+        def lpr_report(self, camera_id, start, end, plates=None):
+            self.ranges.append((start, end))
+            wide = (end[:19] > start[:19]) and (start[11:13] == "05")
+            if wide:   # whole-day query: three visits collapsed into one row
+                return {"plates": [{
+                    "plate": "AB12345", "visits": 3,
+                    "first_seen": "2026-09-05T16:26:40.000Z",
+                    "last_seen": "2026-09-05T16:47:47.000Z",
+                }]}
+            return {"plates": [{      # windowed: the visit actually asked about
+                "plate": "AB12345", "visits": 1,
+                "first_seen": "2026-09-05T16:47:09.000Z",
+                "last_seen": "2026-09-05T16:47:47.000Z",
+            }]}
+
+    def test_window_lands_on_the_right_visit(self):
+        client = self.WindowedClient()
+        anchor = resolve_anchor(
+            client, site(lpr=1), "AB12345", "2026-09-05 11:47", None, "first",
+            plate_window_minutes=15,
+        )
+        assert anchor.kind == ANCHOR_PLATE
+        assert anchor.t0 == datetime(2026, 9, 5, 16, 47, 9, tzinfo=timezone.utc)
+
+    def test_without_a_window_it_lands_on_the_first_wash(self):
+        """The old behaviour, kept as documentation of the failure mode."""
+        client = self.WindowedClient()
+        anchor = resolve_anchor(
+            client, site(lpr=1), "AB12345", "2026-09-05 11:47", None, "first",
+            plate_window_minutes=0,
+        )
+        # 20 minutes early - the wrong wash entirely.
+        assert anchor.t0 == datetime(2026, 9, 5, 16, 26, 40, tzinfo=timezone.utc)
+
+    def test_the_query_range_is_actually_narrowed(self):
+        client = self.WindowedClient()
+        resolve_anchor(
+            client, site(lpr=1), "AB12345", "2026-09-05 11:47", None, "first",
+            plate_window_minutes=15,
+        )
+        start, end = client.ranges[0]
+        assert start == "2026-09-05T16:32:00.000Z"
+        assert end == "2026-09-05T17:02:00.000Z"
+
+    def test_no_incident_time_still_queries_the_whole_day(self):
+        """Without a time there is nothing to centre on; the day is correct."""
+        client = self.WindowedClient()
+        resolve_anchor(client, site(lpr=1), "AB12345", None, "2026-09-05",
+                       "first", plate_window_minutes=45)
+        start, end = client.ranges[0]
+        assert start.startswith("2026-09-05T05")     # local midnight in UTC
+
+    def test_unparseable_incident_time_falls_back_to_the_day(self):
+        """1 claim in 1,105 has free text here. It must not sink the match."""
+        client = self.WindowedClient()
+        anchor = resolve_anchor(
+            client, site(lpr=1), "AB12345", "Monday, April 7 2026 @ 3:00PM",
+            "2026-09-05", "first", plate_window_minutes=45,
+        )
+        assert anchor.kind == ANCHOR_PLATE
+        assert client.ranges[0][0].startswith("2026-09-05T05")
+
+
+class TestNarrowingStopsAtTheFloor:
+    """Two washes closer than the floor cannot be separated - say so."""
+
+    class AlwaysMerged:
+        """A car that washed twice four minutes apart: no window separates it."""
+
+        def __init__(self):
+            self.widths = []
+
+        def lpr_report(self, camera_id, start, end, plates=None):
+            self.widths.append((start, end))
+            return {"plates": [{
+                "plate": "AB12345", "visits": 2,
+                "first_seen": "2026-09-05T16:26:40.000Z",
+                "last_seen": "2026-09-05T16:30:35.000Z",
+            }]}
+
+    def test_it_gives_up_rather_than_looping(self):
+        client = self.AlwaysMerged()
+        anchor = resolve_anchor(
+            client, site(lpr=1), "AB12345", "2026-09-05 11:30", None, "first",
+            plate_window_minutes=45,
+        )
+        # 45 -> 22 -> 11 -> 5 -> 4, then stops.
+        assert len(client.widths) <= 6
+        assert anchor.candidates[0].visits == 2
+
+    def test_an_unresolved_multi_visit_asks_for_review(self):
+        from spotai.claims import Claim
+        from datetime import datetime, timezone
+        claim = Claim(
+            id="X", t0=datetime(2026, 9, 5, tzinfo=timezone.utc), device_id=1,
+            event_id="e", location="L", anchor="plate", match_confidence=1.0,
+            matched_visits=2,
+        )
+        # A perfect score on the right car is still the wrong wash.
+        assert claim.needs_review is True
+
+    def test_a_single_visit_perfect_match_does_not(self):
+        from spotai.claims import Claim
+        from datetime import datetime, timezone
+        claim = Claim(
+            id="X", t0=datetime(2026, 9, 5, tzinfo=timezone.utc), device_id=1,
+            event_id="e", location="L", anchor="plate", match_confidence=1.0,
+            matched_visits=1,
+        )
+        assert claim.needs_review is False

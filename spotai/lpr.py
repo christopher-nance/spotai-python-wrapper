@@ -9,7 +9,7 @@ one window yields only its first and last sighting.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from .errors import PlateNotFound
 from .timewin import day_bounds_utc, iso_z, parse_api_ts
@@ -96,9 +96,26 @@ def lookup_plate(
     date_text: str,
     tz_name: str,
     fuzzy: bool = False,
+    around: datetime | None = None,
+    window_minutes: int = 0,
 ) -> PlateLookup:
-    """Query the LPR report for one operating day."""
-    start, end = day_bounds_utc(date_text, tz_name)
+    """Query the LPR report for one operating day, or a window inside it.
+
+    **The query range is not merely a performance knob.** The report
+    aggregates per plate *per range*, so a car that washed three times in a
+    day comes back as one row spanning its first read to its last. Anchoring
+    on that row puts T0 on the earliest visit, and a claim about a later wash
+    then clips the wrong one - silently, with footage that looks valid.
+
+    Pass ``around`` (the incident time) with ``window_minutes`` to scope the
+    query and separate the visits. Measured live: 18 of 994 cars in one day
+    made repeat visits, and one spanned 20 minutes between first and last.
+    """
+    if around is not None and window_minutes > 0:
+        span = timedelta(minutes=window_minutes)
+        start, end = around - span, around + span
+    else:
+        start, end = day_bounds_utc(date_text, tz_name)
     variants = fuzzy_variants(plate) if fuzzy else [normalize_plate(plate)]
 
     report = client.lpr_report(camera_id, iso_z(start), iso_z(end), plates=variants)

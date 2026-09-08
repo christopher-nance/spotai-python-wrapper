@@ -228,11 +228,26 @@ class Claim:
     matched_plate: str | None = None
     match_confidence: float | None = None
     candidates: list[dict[str, Any]] = field(default_factory=list)
+    # How many visits the matched LPR row still covers. More than one means
+    # the car washed twice too close together to separate, so T0 is the
+    # earliest of them and may belong to the other wash.
+    matched_visits: int = 1
 
     @property
     def needs_review(self) -> bool:
-        """True when a human should confirm the vehicle before this is used."""
-        return self.anchor != "plate" or (self.match_confidence or 0) < 0.92
+        """True when a human should confirm the vehicle before this is used.
+
+        Three reasons, not one. A typed time is an estimate; a weak score may
+        be the wrong car; and an unresolved multi-visit row means the right
+        car but possibly the wrong wash - the LPR merges visits it cannot be
+        asked to separate, and two washes four minutes apart survive the
+        narrowing floor.
+        """
+        return (
+            self.anchor != "plate"
+            or (self.match_confidence or 0) < 0.92
+            or self.matched_visits > 1
+        )
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -290,14 +305,15 @@ def plan_windows(site: SiteMap, t0: datetime) -> list[ClaimCamera]:
     """Compute each camera's clip window from T0 and its offset.
 
     A wash takes minutes, so the exit cameras see the car long after the entry
-    camera does. Every camera gets its own staggered window.
+    camera does. Every camera gets its own staggered window, and its own clip
+    length when the site map gives it one.
     """
     out: list[ClaimCamera] = []
     for cam in site.ordered_cameras():
         start, end = window_for(
             t0,
             cam.offset_seconds or 0,
-            site.clip_seconds,
+            site.clip_seconds_for(cam),
             site.pad_before_seconds,
             site.pad_after_seconds,
         )

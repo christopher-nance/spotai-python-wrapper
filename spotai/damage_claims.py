@@ -50,7 +50,13 @@ from .errors import (
 from .lpr import lookup_plate
 from .matching import LIKELY, is_usable, rank_candidates
 from .sitemap import MAX_DEVICE_CAMERAS, SiteMap
-from .timewin import get_zone, iso_z, parse_api_ts, parse_local
+from .timewin import (
+    TimeParseError,
+    get_zone,
+    iso_z,
+    parse_api_ts,
+    parse_local,
+)
 
 if TYPE_CHECKING:  # pragma: no cover
     from .client import SpotAI
@@ -64,6 +70,16 @@ ANCHOR_ESTIMATE = "estimate"  # approximate: a person typed a time
 
 # How far either side of an estimated time the shared link should span.
 DEFAULT_ESTIMATE_WINDOW_MINUTES = 20
+
+# How far either side of a stated incident time to search for the plate.
+# Human incident times were off from LPR truth by a median 7 minutes and a
+# worst case of 15 (n=3), so 45 is generous cover without pulling in a
+# repeat visit - one measured car's three washes were 20 minutes apart.
+DEFAULT_PLATE_WINDOW_MINUTES = 45
+
+# The narrowing floor. Below this a real visit starts falling outside the
+# window, and an ambiguous match is better than none.
+MIN_PLATE_WINDOW_MINUTES = 4
 
 
 def today_at_site(site: SiteMap) -> str:
@@ -101,6 +117,40 @@ class Anchor:
         return self.kind == ANCHOR_PLATE
 
 
+def _narrow_to_one_visit(
+    client: "SpotAI",
+    site: SiteMap,
+    plate: str,
+    date_text: str,
+    around: datetime,
+    window_minutes: int,
+    candidates: list,
+    min_confidence: float,
+) -> list:
+    """Halve the search window until the best candidate is a single visit.
+
+    The LPR report merges a plate's visits within the queried range, and a
+    merged row cannot be un-merged - the individual times simply are not in
+    the response. The only way to recover them is to ask a narrower question.
+
+    Stops early rather than narrowing past the car: a stated time can be 15
+    minutes out, and an ambiguous match beats no match at all.
+    """
+    best = candidates
+    width = window_minutes
+    while width > MIN_PLATE_WINDOW_MINUTES and best and best[0].visits > 1:
+        width = max(MIN_PLATE_WINDOW_MINUTES, width // 2)
+        lookup = lookup_plate(
+            client, site.lpr_camera_id, plate, date_text, site.timezone,
+            fuzzy=False, around=around, window_minutes=width,
+        )
+        tighter = rank_candidates(plate, lookup.sightings)
+        if not tighter or tighter[0].score < min_confidence:
+            break
+        best = tighter
+    return best
+
+
 def resolve_anchor(
     client: "SpotAI",
     site: SiteMap,
@@ -109,22 +159,48 @@ def resolve_anchor(
     date: str | None,
     occurrence: str,
     min_confidence: float = LIKELY,
+    plate_window_minutes: int = DEFAULT_PLATE_WINDOW_MINUTES,
 ) -> Anchor:
     """Work out T0 and how much to trust it.
 
     Prefers an LPR match. Falls back to a typed time when the plate cannot be
     matched confidently and ``at`` was supplied - which is the normal case for
     the sites with no working LPR camera.
+
+    When ``at`` is supplied it also narrows the LPR query to a window around
+    it. That is what keeps a repeat customer's visits apart: the report
+    aggregates per plate per range, so a whole-day query would anchor every
+    one of a car's three washes on the first.
     """
     fallback_date = date or (at[:10] if at else None) or today_at_site(site)
 
     candidates: list = []
     if plate and site.lpr_camera_id and is_usable(plate):
+        # A stated incident time scopes the search; without one we have no
+        # choice but to take the whole day.
+        around = None
+        if at and plate_window_minutes > 0:
+            try:
+                around = parse_local(at, site.timezone)
+            except TimeParseError:
+                # 1 claim in 1,105 carries free text here. A bad timestamp
+                # must not sink the plate match - fall back to the day.
+                around = None
         lookup = lookup_plate(
             client, site.lpr_camera_id, plate, fallback_date, site.timezone,
-            fuzzy=False,
+            fuzzy=False, around=around, window_minutes=plate_window_minutes,
         )
         candidates = rank_candidates(plate, lookup.sightings)
+        # A row covering several visits hides the individual times, so its
+        # first_seen may belong to a different wash than the claim. One fixed
+        # window cannot solve this: it must be wide enough to absorb a
+        # 15-minute error in a human's stated time, yet narrower than the gap
+        # between two washes. So start wide and tighten only when needed.
+        if around and candidates and candidates[0].visits > 1:
+            candidates = _narrow_to_one_visit(
+                client, site, plate, fallback_date, around,
+                plate_window_minutes, candidates, min_confidence,
+            )
         if candidates and candidates[0].score >= min_confidence:
             best = candidates[0]
             t0 = best.first_seen if occurrence == "first" else best.last_seen
@@ -170,6 +246,7 @@ def collect(
     clips: str = "auto",
     min_confidence: float = LIKELY,
     estimate_window_minutes: int = DEFAULT_ESTIMATE_WINDOW_MINUTES,
+    plate_window_minutes: int = DEFAULT_PLATE_WINDOW_MINUTES,
 ) -> Claim:
     """Package a damage claim into a Spot case. Does not wait for exports.
 
@@ -187,7 +264,8 @@ def collect(
 
     site = client.site_map(location)
     anchor = resolve_anchor(
-        client, site, plate, at, date, occurrence, min_confidence
+        client, site, plate, at, date, occurrence, min_confidence,
+        plate_window_minutes,
     )
     external_id = build_external_id(
         site.slug, claim_ref, anchor.plate or plate, anchor.date_text
@@ -285,6 +363,9 @@ def collect(
         matched_plate=anchor.plate,
         match_confidence=anchor.confidence,
         candidates=[c.to_dict() for c in anchor.candidates],
+        matched_visits=(
+            anchor.candidates[0].visits if anchor.candidates else 1
+        ),
     )
 
 

@@ -2,7 +2,7 @@
 
 Drop this file into your project as `CLAUDE.md`, `AGENTS.md`, or attach it to
 a Codex/Claude Code session. It is a complete operating manual for writing
-correct code against `spotai-python-wrapper` v0.3.0.
+correct code against `spotai-python-wrapper` v0.4.0.
 
 Optimise for correctness over brevity. Several API behaviours below are
 counter-intuitive and will silently produce broken code if ignored.
@@ -76,11 +76,29 @@ Camera(
     name: str = "",                    # defaults to "camera-{id}"
     role: str = "tunnel",              # "entry" | "tunnel" | "exit"
     offset_seconds: int | None = None, # None => seeded from transit_seconds
+    arch: str | None = None,           # cameras sharing a label share an offset
+    clip_seconds: int | None = None,   # None => site-wide clip_seconds
 )
 ```
 
 Invalid `role` raises `ValueError`. Negative `offset_seconds` raises
-`ValueError`.
+`ValueError`. `clip_seconds <= 0` raises `ValueError`.
+
+**`arch`** groups cameras bolted to the same physical frame, which therefore
+see the car at the same instant. State `offset_seconds` on any one member and
+every camera carrying the same label inherits it, so an eight-camera entrance
+arch is one number to maintain instead of eight to keep in step. Two different
+explicit offsets on one arch raise `ValueError` rather than resolving to a
+guess — one of them would clip the wrong moment.
+
+An arch may span roles. A `tunnel` camera that is a member of an anchored arch
+is excluded from the even spread, so mounting an overhead camera on the
+entrance arch does not push the real tunnel cameras out of position.
+
+**`clip_seconds`** overrides the site-wide clip length for one camera. Dwell
+varies enormously by position: at a measured site an exit arch saw the car for
+12 seconds while a mid-tunnel camera held it for 50. One clip length for both
+either truncates the tunnel or pads the exit with a minute of empty frame.
 
 ### `SiteMap`
 
@@ -110,7 +128,17 @@ cameras, or more than 4 `key_camera_ids`.
 **Offset seeding.** Any camera left with `offset_seconds=None` is filled in:
 `entry` → `0`, `exit` → `transit_seconds`, `tunnel` → evenly spread via
 `transit * i / (n + 1)` for the i-th of n tunnel cameras. Explicit values are
-never overwritten.
+never overwritten, and an arch offset is applied after seeding so it always
+wins.
+
+`clip_seconds_for(camera)` returns the clip length that will actually be used
+for one camera — its own override, else the site value.
+
+**The even spread is a placeholder, not a measurement.** It assumes cameras
+are equally spaced and the car moves at constant speed; neither is true in a
+real tunnel. Measured spacing at one site ran 30s, 33s, 37s, 23s, 10s between
+consecutive positions — the spread would have put two cameras over 20 seconds
+out. Use it to get a site running, then replace it with observed offsets.
 
 ### `Claim` (returned by `collect_damage_claim`)
 
@@ -129,6 +157,7 @@ claim.anchor      # "plate" | "estimate"
 claim.matched_plate      # what the LPR actually read, or None
 claim.match_confidence   # 0.0-1.0, or None
 claim.candidates         # list[dict] - the shortlist, for a human to pick from
+claim.matched_visits     # int - visits still merged in the matched row
 claim.needs_review       # bool
 claim.to_dict()   # JSON-safe
 ```
@@ -244,7 +273,26 @@ clip of the **wrong car is worse than no clip** because it still looks like
 evidence. So `clips="auto"` exports only for a precise anchor.
 
 `Claim.anchor` and `ClaimResult.anchor` record which was used.
-`Claim.needs_review` is True when a human should confirm the vehicle.
+`Claim.needs_review` is True when a human should confirm the vehicle - for
+any of three reasons: the anchor was an estimate, the score was below 0.92, or
+`matched_visits > 1`.
+
+**`matched_visits` and the repeat-customer trap.** The LPR report aggregates
+per plate *per query range*, so a car washed three times in a day returns one
+row spanning first to last. Anchoring on it puts T0 on the earliest wash, and
+a claim about a later one gets footage of the wrong pass - which still looks
+like valid evidence, so nobody notices.
+
+`collect_damage_claim` defends against this when `at=` is supplied: it scopes
+the LPR query to `plate_window_minutes` (default 45) around the stated time,
+then halves that window until the matched row covers a single visit, stopping
+at a 4-minute floor or when narrowing would lose the car. Measured live, this
+resolves visits 20 minutes apart from any starting window between 5 and 45
+minutes.
+
+Two washes closer together than the floor cannot be separated - the individual
+times are simply not in the response. There `matched_visits` stays above 1 and
+`needs_review` becomes True, which is the honest answer rather than a guess.
 `ClaimResult.link_only` is True when no clips were exported.
 
 ### `match_plate` - ranking, not guessing

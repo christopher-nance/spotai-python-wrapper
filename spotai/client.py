@@ -15,6 +15,7 @@ from .errors import NoLprCamera
 from .lpr import lookup_plate
 from .matching import LIKELY, PlateCandidate, is_usable, rank_candidates
 from .sitemap import SiteMap, resolve_site_map
+from .timewin import TimeParseError, parse_local
 from .transport import BASE_URL, Transport
 
 DEFAULT_INTEGRATION_NAME = "SpotAI Python Wrapper"
@@ -331,6 +332,8 @@ class SpotAI:
         plate: str,
         date: str | None = None,
         limit: int = 5,
+        at: str | None = None,
+        window_minutes: int = 45,
     ) -> list[PlateCandidate]:
         """Rank what the LPR actually read against a typed plate.
 
@@ -349,9 +352,16 @@ class SpotAI:
             raise NoLprCamera(site.location_name + " has no LPR camera.")
         if not is_usable(plate):
             return []
-        day = date or damage_claims.today_at_site(site)
+        day = date or (at[:10] if at else None) or damage_claims.today_at_site(site)
+        around = None
+        if at and window_minutes > 0:
+            try:
+                around = parse_local(at, site.timezone)
+            except TimeParseError:
+                around = None
         lookup = lookup_plate(
-            self, site.lpr_camera_id, plate, day, site.timezone, fuzzy=False
+            self, site.lpr_camera_id, plate, day, site.timezone, fuzzy=False,
+            around=around, window_minutes=window_minutes,
         )
         return rank_candidates(plate, lookup.sightings, limit=limit)
 
@@ -368,6 +378,7 @@ class SpotAI:
         clips: str = "auto",
         min_confidence: float = LIKELY,
         estimate_window_minutes: int = 20,
+        plate_window_minutes: int = 45,
     ) -> Claim:
         """Package a damage claim into a Spot case. Returns immediately.
 
@@ -386,7 +397,7 @@ class SpotAI:
         return damage_claims.collect(
             self, location, customer, plate, at, date, claim_ref,
             occurrence, reuse_existing, clips, min_confidence,
-            estimate_window_minutes,
+            estimate_window_minutes, plate_window_minutes,
         )
 
     def get_claim(

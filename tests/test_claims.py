@@ -352,3 +352,44 @@ class TestPartExternalIds:
 
     def test_suffix_survives_truncation(self):
         assert part_external_id("X" * 255, 6).endswith("#P6")
+
+
+class TestPerCameraClipWindows:
+    """A camera the car clears in 12s should not get the same window as one
+    it sits in for 50."""
+
+    def site(self):
+        return SiteMap(
+            location_id=99,
+            location_name="Test: Riverside",
+            timezone="America/Chicago",
+            transit_seconds=156,
+            clip_seconds=90,
+            pad_before_seconds=15,
+            pad_after_seconds=30,
+            cameras=[
+                Camera(id=1, name="LPR", role="entry", arch="entrance",
+                       offset_seconds=0),
+                Camera(id=2, name="SS 1", role="tunnel", offset_seconds=30,
+                       clip_seconds=50),
+                Camera(id=3, name="Exit D-T", role="exit", arch="exit",
+                       offset_seconds=156, clip_seconds=12),
+            ],
+        )
+
+    def test_each_camera_uses_its_own_clip_length(self):
+        t0 = datetime(2026, 9, 5, 12, 13, 0, tzinfo=timezone.utc)
+        by_id = {c.camera_id: c for c in plan_windows(self.site(), t0)}
+        # SS 1: 30s offset, 50s clip -> 12:13:15 .. 12:14:50
+        assert by_id[2].window_start == "2026-09-05T12:13:15.000Z"
+        assert by_id[2].window_end == "2026-09-05T12:14:50.000Z"
+        # Exit: 156s offset, 12s clip, 30s tail pad -> 12:15:21 .. 12:16:18
+        assert by_id[3].window_start == "2026-09-05T12:15:21.000Z"
+        assert by_id[3].window_end == "2026-09-05T12:16:18.000Z"
+
+    def test_camera_without_an_override_uses_the_site_default(self):
+        t0 = datetime(2026, 9, 5, 12, 13, 0, tzinfo=timezone.utc)
+        by_id = {c.camera_id: c for c in plan_windows(self.site(), t0)}
+        # LPR: 0s offset, site default 90s clip -> 12:12:45 .. 12:15:00
+        assert by_id[1].window_start == "2026-09-05T12:12:45.000Z"
+        assert by_id[1].window_end == "2026-09-05T12:15:00.000Z"

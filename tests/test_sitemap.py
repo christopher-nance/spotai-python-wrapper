@@ -193,3 +193,100 @@ class TestRoundTrip:
             }
         )
         assert [c.id for c in site.cameras] == [1, 2]
+
+
+class TestArchGrouping:
+    """Cameras bolted to one arch see the car at the same instant."""
+
+    def arch_site(self, **overrides):
+        defaults = dict(
+            location_id=99,
+            location_name="Example Wash: Riverside",
+            transit_seconds=156,
+            cameras=[
+                Camera(id=1, name="LPR", role="entry", arch="entrance",
+                       offset_seconds=0),
+                Camera(id=2, name="Ent D-T", role="entry", arch="entrance"),
+                Camera(id=3, name="TOP", role="tunnel", arch="entrance"),
+                Camera(id=4, name="SS 1", role="tunnel", offset_seconds=30),
+                Camera(id=5, name="Exit D-T", role="exit", arch="exit",
+                       offset_seconds=156),
+                Camera(id=6, name="Exit P-B", role="exit", arch="exit"),
+            ],
+        )
+        defaults.update(overrides)
+        return SiteMap(**defaults)
+
+    def test_arch_members_inherit_the_stated_offset(self):
+        site = self.arch_site()
+        by_id = {c.id: c for c in site.cameras}
+        assert by_id[2].offset_seconds == 0
+        assert by_id[6].offset_seconds == 156
+
+    def test_a_tunnel_camera_on_an_arch_is_not_spread(self):
+        """TOP sits on the entrance arch, so it must not be treated as a free
+        tunnel position and scattered down the tunnel."""
+        site = self.arch_site()
+        assert {c.id: c.offset_seconds for c in site.cameras}[3] == 0
+
+    def test_arch_membership_does_not_displace_real_tunnel_cameras(self):
+        site = SiteMap(
+            location_id=1,
+            location_name="X",
+            transit_seconds=100,
+            cameras=[
+                Camera(id=1, role="entry", arch="a", offset_seconds=0),
+                Camera(id=2, role="tunnel", arch="a"),
+                Camera(id=3, role="tunnel"),
+                Camera(id=4, role="exit"),
+            ],
+        )
+        # Camera 3 is the only unanchored tunnel camera, so it takes the
+        # single midpoint rather than sharing a two-way spread with camera 2.
+        assert {c.id: c.offset_seconds for c in site.cameras}[3] == 50
+
+    def test_conflicting_offsets_on_one_arch_are_refused(self):
+        with pytest.raises(ValueError, match="disagree about offset_seconds"):
+            SiteMap(
+                location_id=1,
+                location_name="X",
+                cameras=[
+                    Camera(id=1, role="exit", arch="exit", offset_seconds=156),
+                    Camera(id=2, role="exit", arch="exit", offset_seconds=160),
+                ],
+            )
+
+    def test_arch_survives_a_round_trip(self):
+        site = self.arch_site()
+        clone = SiteMap.from_dict(site.to_dict())
+        assert clone.to_dict() == site.to_dict()
+        assert {c.arch for c in clone.cameras} == {"entrance", "exit", None}
+
+
+class TestPerCameraClipSeconds:
+    def test_override_wins_over_the_site_default(self):
+        site = SiteMap(
+            location_id=1,
+            location_name="X",
+            clip_seconds=90,
+            cameras=[
+                Camera(id=1, role="entry"),
+                Camera(id=2, role="exit", clip_seconds=30),
+            ],
+        )
+        by_id = {c.id: c for c in site.cameras}
+        assert site.clip_seconds_for(by_id[1]) == 90
+        assert site.clip_seconds_for(by_id[2]) == 30
+
+    def test_zero_or_negative_is_refused(self):
+        with pytest.raises(ValueError, match="clip_seconds must be greater"):
+            Camera(id=1, clip_seconds=0)
+
+    def test_clip_seconds_survives_a_round_trip(self):
+        site = SiteMap(
+            location_id=1,
+            location_name="X",
+            cameras=[Camera(id=1, role="entry", clip_seconds=45)],
+        )
+        clone = SiteMap.from_dict(site.to_dict())
+        assert clone.cameras[0].clip_seconds == 45

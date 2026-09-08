@@ -32,12 +32,24 @@ class Camera:
 
     ``offset_seconds`` is how long after T0 this camera sees the car. Leave it
     as None and the SiteMap seeds it from ``transit_seconds``.
+
+    ``arch`` groups cameras that are physically mounted together and therefore
+    see the car at the same instant. Give one camera on the arch an explicit
+    ``offset_seconds`` and every other camera carrying the same label inherits
+    it, so a site with an eight-camera entrance arch is one number to maintain
+    rather than eight to keep in step.
+
+    ``clip_seconds`` overrides the site-wide clip length for this camera. An
+    exit arch the car clears in twelve seconds does not need the same footage
+    as a tunnel position it sits in for fifty.
     """
 
     id: int
     name: str = ""
     role: str = "tunnel"
     offset_seconds: int | None = None
+    arch: str | None = None
+    clip_seconds: int | None = None
 
     def __post_init__(self) -> None:
         self.id = int(self.id)
@@ -48,6 +60,10 @@ class Camera:
             )
         if self.offset_seconds is not None and self.offset_seconds < 0:
             raise ValueError("offset_seconds must be >= 0")
+        if self.clip_seconds is not None and self.clip_seconds <= 0:
+            raise ValueError("clip_seconds must be greater than 0")
+        if self.arch is not None:
+            self.arch = str(self.arch).strip() or None
         if not self.name:
             self.name = "camera-" + str(self.id)
 
@@ -86,19 +102,63 @@ class SiteMap:
                 + ", ".join(str(d) for d in dupes)
             )
 
+        self._resolve_arches()
         self._seed_offsets()
+        self._apply_arch_offsets()
         if not self.key_camera_ids:
             self.key_camera_ids = self.default_key_cameras()
         self._validate_key_cameras()
 
     # -- offsets --------------------------------------------------------
+    def _resolve_arches(self) -> None:
+        """Check every arch agrees with itself before anything is seeded.
+
+        Cameras sharing an arch are bolted to the same frame, so two different
+        explicit offsets on one arch is a contradiction, not a preference -
+        one of them would clip the wrong moment. Refuse it rather than pick.
+        """
+        stated: dict[str, set[int]] = {}
+        for cam in self.cameras:
+            if cam.arch and cam.offset_seconds is not None:
+                stated.setdefault(cam.arch, set()).add(cam.offset_seconds)
+        for arch, values in sorted(stated.items()):
+            if len(values) > 1:
+                raise ValueError(
+                    "Cameras on arch " + repr(arch) + " disagree about "
+                    "offset_seconds (" + ", ".join(str(v) for v in sorted(values))
+                    + "). Cameras on one arch see the car at the same instant, "
+                    "so they must share a single offset."
+                )
+        self._arch_offsets = {a: values.pop() for a, values in stated.items()}
+
+    def _apply_arch_offsets(self) -> None:
+        """Give every camera on an arch the offset stated for that arch.
+
+        Runs after seeding so an explicit arch offset wins over a value the
+        even-spread would otherwise have invented.
+        """
+        for cam in self.cameras:
+            if cam.arch and cam.arch in self._arch_offsets:
+                cam.offset_seconds = self._arch_offsets[cam.arch]
+
+    def clip_seconds_for(self, camera: Camera) -> int:
+        """Clip length for one camera: its own override, else the site value."""
+        return camera.clip_seconds or self.clip_seconds
+
     def _seed_offsets(self) -> None:
         """Fill in any offsets the caller left as None.
 
         Entry cameras sit at 0, exit cameras at ``transit_seconds``, and
         tunnel cameras spread evenly between the two.
         """
-        tunnel = [c for c in self.cameras if c.role == "tunnel"]
+        # A camera whose arch offset is already known is not a free position
+        # in the spread - including it would push the real tunnel cameras out
+        # of place.
+        tunnel = [
+            c
+            for c in self.cameras
+            if c.role == "tunnel" and c.arch not in self._arch_offsets
+        ]
         seeded = seed_offsets(len(tunnel), self.transit_seconds)
         for cam, value in zip(tunnel, seeded):
             if cam.offset_seconds is None:
@@ -193,6 +253,8 @@ class SiteMap:
                     "name": c.name,
                     "role": c.role,
                     "offset_seconds": c.offset_seconds,
+                    "arch": c.arch,
+                    "clip_seconds": c.clip_seconds,
                 }
                 for c in self.ordered_cameras()
             ],
